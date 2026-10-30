@@ -1,0 +1,206 @@
+// Prisma schema for RailConnect - Real-Time Train Ticket Booking Platform
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum BookingStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  CANCELLED
+  FAILED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum SourceMode {
+  LIVE
+  CACHED
+  DEMO
+}
+
+model User {
+  id           String     @id @default(uuid())
+  name         String
+  email        String     @unique
+  phone        String?
+  passwordHash String
+  role         Role       @default(USER)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  bookings     Booking[]
+  auditLogs    AuditLog[]
+
+  @@map("users")
+}
+
+model Station {
+  id        String      @id @default(uuid())
+  code      String      @unique
+  name      String
+  city      String
+  state     String
+  active    Boolean     @default(true)
+  stops     TrainStop[]
+
+  @@map("stations")
+}
+
+model Train {
+  id           String                  @id @default(uuid())
+  trainNumber  String                  @unique
+  name         String
+  trainType    String                  // e.g., Vande Bharat, Rajdhani, Shatabdi, Superfast
+  active       Boolean                 @default(true)
+  stops        TrainStop[]
+  classes      TrainClass[]
+  fareQuotes   FareQuote[]
+  availability AvailabilitySnapshot[]
+  bookings     Booking[]
+
+  @@map("trains")
+}
+
+model TrainStop {
+  id            String   @id @default(uuid())
+  trainId       String
+  stationId     String
+  sequence      Int
+  arrivalTime   String   // HH:mm
+  departureTime String   // HH:mm
+  dayOffset     Int      @default(0) // 0 for same day, 1 for next day, etc.
+
+  train   Train   @relation(fields: [trainId], references: [id], onDelete: Cascade)
+  station Station @relation(fields: [stationId], references: [id], onDelete: Cascade)
+
+  @@unique([trainId, sequence])
+  @@map("train_stops")
+}
+
+model TrainClass {
+  id      String @id @default(uuid())
+  trainId String
+  code    String // 1A, 2A, 3A, 3E, CC, EC, SL, 2S
+  label   String // AC First Class, AC 2 Tier, AC 3 Tier, AC Chair Car, Executive Chair Car, Sleeper
+
+  train Train @relation(fields: [trainId], references: [id], onDelete: Cascade)
+
+  @@unique([trainId, code])
+  @@map("train_classes")
+}
+
+model FareQuote {
+  id         String     @id @default(uuid())
+  trainId    String
+  classCode  String
+  amount     Float
+  currency   String     @default("INR")
+  sourceMode SourceMode @default(DEMO)
+  fetchedAt  DateTime   @default(now())
+  expiresAt  DateTime
+
+  train Train @relation(fields: [trainId], references: [id], onDelete: Cascade)
+
+  @@map("fare_quotes")
+}
+
+model AvailabilitySnapshot {
+  id             String     @id @default(uuid())
+  trainId        String
+  journeyDate    String     // YYYY-MM-DD
+  classCode      String
+  status         String     // AVAILABLE, RAC, WL, NOT_AVAILABLE
+  availableCount Int?
+  sourceMode     SourceMode @default(DEMO)
+  fetchedAt      DateTime   @default(now())
+
+  train Train @relation(fields: [trainId], references: [id], onDelete: Cascade)
+
+  @@unique([trainId, journeyDate, classCode])
+  @@map("availability_snapshots")
+}
+
+model Booking {
+  id              String        @id @default(uuid())
+  publicReference String        @unique // e.g. RC-BKG-849201
+  userId          String
+  trainId         String
+  journeyDate     String        // YYYY-MM-DD
+  classCode       String
+  status          BookingStatus @default(PENDING_PAYMENT)
+  totalAmount     Float
+  currency        String        @default("INR")
+  idempotencyKey  String?       @unique
+  providerPnr     String?       // Kept null unless supplied by authorized live railway provider
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  train      Train       @relation(fields: [trainId], references: [id], onDelete: Cascade)
+  passengers Passenger[]
+  payments   Payment[]
+
+  @@map("bookings")
+}
+
+model Passenger {
+  id              String  @id @default(uuid())
+  bookingId       String
+  name            String
+  age             Int
+  gender          String? // Male, Female, Other
+  berthPreference String? // Lower, Middle, Upper, Side Lower, Side Upper, Window
+  seatNumber      String? // e.g., B4-23
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@map("passengers")
+}
+
+model Payment {
+  id                String        @id @default(uuid())
+  bookingId         String
+  provider          String        // sandbox, razorpay, stripe
+  providerPaymentId String?
+  amount            Float
+  currency          String        @default("INR")
+  status            PaymentStatus @default(PENDING)
+  idempotencyKey    String?       @unique
+  paidAt            DateTime?
+  createdAt         DateTime      @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorUserId  String?
+  action       String   // e.g. AUTH_LOGIN, BOOKING_CREATE, PAYMENT_VERIFY, BOOKING_CANCEL
+  resourceType String   // Booking, Payment, User, Train
+  resourceId   String?
+  requestId    String?
+  ipAddress    String?
+  createdAt    DateTime @default(now())
+
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}
